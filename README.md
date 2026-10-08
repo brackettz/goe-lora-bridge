@@ -26,10 +26,7 @@ Home Assistant, using an encrypted 868 MHz LoRa point-to-point link between two 
 | Part | Purpose |
 | --- | --- |
 | 2× Heltec WiFi LoRa 32 V4 (ESP32-S3, SX1262, 0.96" SSD1306 OLED) | `garage_node` and `home_node` |
-| Mean Well HDR-15-5 (5 V DIN rail PSU) | Powers the garage node |
 | 868 MHz antennas | Use the best antenna you can mount; reinforced concrete is the main obstacle |
-
-> ⚠️ Mains wiring of the power supply must be done by a qualified electrician.
 
 ## Getting started
 
