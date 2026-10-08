@@ -48,9 +48,6 @@ Home Assistant, using an encrypted 868 MHz LoRa point-to-point link between two 
    pio run -e home_node -t upload
    ```
 
-`include/secrets.h` is git-ignored. Never commit it, and don't publish built firmware images: the secrets are
-compiled into them.
-
 ## Configuration
 
 Radio and timing constants live in `src/shared.h` and at the top of each node's source file.
