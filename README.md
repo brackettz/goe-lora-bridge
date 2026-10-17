@@ -39,9 +39,10 @@ Home Assistant, using an encrypted 868 MHz LoRa point-to-point link between two 
    ```sh
    python3 -c "import os;print(', '.join(f'0x{b:02x}' for b in os.urandom(32)))"
    ```
-4. Fill in the charger hotspot credentials (`GOE_WIFI_*`, printed on the charger's reset card), your home Wi-Fi
-   and your MQTT broker.
-5. In the go-e app, enable **HTTP API v2** and keep the charger's Wi-Fi hotspot enabled.
+4. Choose a name and password (8+ characters) for the garage node's access point (`GOE_AP_*`), and fill in your
+   home Wi-Fi and your MQTT broker.
+5. In the go-e app, enable **HTTP API v2** and connect the charger to the garage node's Wi-Fi. The charger's own
+   hotspot does not serve the HTTP API on current hardware.
 6. Flash both boards:
    ```sh
    pio run -e garage_node -t upload
@@ -110,12 +111,12 @@ other node rejects its frames as replays.
 
 The first line shows the node name and uptime. The other lines show:
 
-- Wi-Fi signal strength
+- Wi-Fi: signal strength (home node), or connected clients and the charger's address (garage node)
 - MQTT status (home node) or charger status (garage node)
 - RSSI and SNR of the last received frame
 - Charger power and current, plus the TX or command state
 
-The display turns off after 60 s. It wakes for 10 s when a frame arrives, and for 60 s when you press the PRG button.
+The display turns off after 60 s. Press the PRG button to turn it on for 60 s.
 
 ## Status
 

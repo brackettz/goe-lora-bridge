@@ -17,10 +17,11 @@ constexpr uint8_t LORA_MISO = 11;
 constexpr uint8_t LORA_RST = 12;
 constexpr uint8_t LORA_BUSY = 13;
 constexpr uint8_t LORA_DIO1 = 14;
-// GC1109 front end (Heltec V4 only)
-constexpr uint8_t PA_POWER = 7;
-constexpr uint8_t PA_EN = 2;
-constexpr uint8_t PA_TX_EN = 46;
+// RF front end: V4.2 has a GC1109, V4.3 a KCT8103L. GPIO2 reads HIGH on the KCT8103L before it is driven.
+constexpr uint8_t FEM_POWER = 7;
+constexpr uint8_t FEM_CSD = 2;
+constexpr uint8_t GC1109_CPS = 46;
+constexpr uint8_t KCT8103L_CTX = 5;
 constexpr uint8_t OLED_SDA = 17;
 constexpr uint8_t OLED_SCL = 18;
 constexpr uint8_t OLED_RST = 21;
@@ -35,8 +36,13 @@ constexpr float BW_KHZ = 125.0f;
 constexpr uint8_t SF = 11;
 constexpr uint8_t CR = 5;
 constexpr uint8_t SYNC_WORD = 0x12;
-// SX1262 output before the GC1109 PA; keep total radiated power <= 27 dBm ERP
+// SX1262 output before the PA (+11 dB GC1109, +13 dB KCT8103L); keep total radiated power <= 27 dBm ERP
+#ifdef DESK_TEST
+// Boards next to each other: keep the receiver's LNA out of saturation
+constexpr int8_t TX_POWER_DBM = -9;
+#else
 constexpr int8_t TX_POWER_DBM = 10;
+#endif
 constexpr uint16_t PREAMBLE_LEN = 12;
 constexpr float TCXO_VOLTAGE = 1.8f;
 constexpr uint32_t DUTY_CYCLE_PERCENT = 10;
@@ -47,7 +53,6 @@ constexpr uint8_t NODE_GARAGE_ID = 1;
 constexpr uint8_t NODE_HOME_ID = 2;
 
 constexpr uint32_t SCREEN_TIMEOUT_MS = 60000;
-constexpr uint32_t SCREEN_PACKET_WAKE_MS = 10000;
 constexpr uint32_t SCREEN_REFRESH_MS = 500;
 
 enum MsgType : uint8_t { MSG_TELEMETRY = 1, MSG_COMMAND = 2 };
@@ -199,12 +204,18 @@ class LoraLink {
       : spi_(FSPI), radio_(new Module(pins::LORA_NSS, pins::LORA_DIO1, pins::LORA_RST, pins::LORA_BUSY, spi_)) {}
 
   int16_t begin() {
-    pinMode(pins::PA_POWER, OUTPUT);
-    pinMode(pins::PA_EN, OUTPUT);
-    pinMode(pins::PA_TX_EN, OUTPUT);
-    digitalWrite(pins::PA_POWER, HIGH);
-    digitalWrite(pins::PA_EN, HIGH);
-    digitalWrite(pins::PA_TX_EN, LOW);
+    pinMode(pins::FEM_POWER, OUTPUT);
+    digitalWrite(pins::FEM_POWER, HIGH);
+    delay(1);
+    pinMode(pins::FEM_CSD, INPUT);
+    delay(1);
+    kct8103l_ = digitalRead(pins::FEM_CSD) == HIGH;
+    femTxPin_ = kct8103l_ ? pins::KCT8103L_CTX : pins::GC1109_CPS;
+    pinMode(pins::FEM_CSD, OUTPUT);
+    digitalWrite(pins::FEM_CSD, HIGH);
+    pinMode(femTxPin_, OUTPUT);
+    digitalWrite(femTxPin_, LOW);
+    Serial.printf("LoRa FEM: %s\n", femName());
 
     spi_.begin(pins::LORA_SCK, pins::LORA_MISO, pins::LORA_MOSI, pins::LORA_NSS);
     int16_t state = radio_.begin(radio_cfg::FREQ_MHZ, radio_cfg::BW_KHZ, radio_cfg::SF, radio_cfg::CR,
@@ -222,10 +233,10 @@ class LoraLink {
 
   bool transmit(const uint8_t* data, size_t len) {
     if (!canTransmit()) return false;
-    digitalWrite(pins::PA_TX_EN, HIGH);
+    digitalWrite(femTxPin_, HIGH);
     radio_irq::pending = false;
     if (radio_.startTransmit(data, len) != RADIOLIB_ERR_NONE) {
-      digitalWrite(pins::PA_TX_EN, LOW);
+      digitalWrite(femTxPin_, LOW);
       startRx();
       return false;
     }
@@ -259,6 +270,7 @@ class LoraLink {
     return ok;
   }
 
+  const char* femName() const { return kct8103l_ ? "KCT8103L" : "GC1109"; }
   bool txActive() const { return txActive_; }
   uint32_t lastTxMs() const { return lastTxMs_; }
   uint32_t lastAirtimeMs() const { return lastAirtimeMs_; }
@@ -268,7 +280,7 @@ class LoraLink {
 
   void finishTx() {
     radio_.finishTransmit();
-    digitalWrite(pins::PA_TX_EN, LOW);
+    digitalWrite(femTxPin_, LOW);
     txActive_ = false;
     lastTxMs_ = millis();
     lastAirtimeMs_ = lastTxMs_ - txStartMs_;
@@ -278,6 +290,8 @@ class LoraLink {
 
   SPIClass spi_;
   SX1262 radio_;
+  bool kct8103l_ = false;
+  uint8_t femTxPin_ = pins::GC1109_CPS;
   bool txActive_ = false;
   uint32_t txStartMs_ = 0;
   uint32_t lastTxMs_ = 0;

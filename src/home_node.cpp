@@ -116,7 +116,7 @@ void publishEntity(const char* component, const char* key, const char* name, boo
   String uid = String(DEVICE_ID) + "_" + key;
   doc["name"] = name;
   doc["unique_id"] = uid;
-  doc["object_id"] = uid;
+  doc["default_entity_id"] = String(component) + "." + uid;
   doc["state_topic"] = TOPIC_STATE;
   doc["value_template"] = String("{{ value_json.") + key + " }}";
 
@@ -265,7 +265,6 @@ void handleRadio() {
   lastRxMs = millis();
   lastRxRssi = pkt.rssi;
   lastRxSnr = pkt.snr;
-  screen.wake(SCREEN_PACKET_WAKE_MS);
 
   if (cmdPending() && telemetry.ackCounter >= cmdCounter) pendingCmd = {};
 
@@ -282,7 +281,11 @@ void drawScreen() {
     cmdLine += "idle  TX " + formatAgo(lora.lastTxMs());
   }
   String lines[StatusDisplay::LINES] = {
+#ifdef DESK_TEST
+      "HOME DESK " + formatUptime(),
+#else
       "HOME  " + formatUptime(),
+#endif
       "WiFi " + (wifiOk ? String(WiFi.RSSI()) + " dBm" : String("down")),
       radioState == RADIOLIB_ERR_NONE ? "MQTT " + String(mqtt.connected() ? "connected" : "down")
                                       : "LoRa init err " + String(radioState),

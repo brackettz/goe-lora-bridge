@@ -1,16 +1,20 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <esp_netif.h>
+#include <esp_wifi.h>
 
 #include "shared.h"
 
 namespace {
 
-constexpr char GOE_BASE_URL[] = "http://192.168.4.1";
 constexpr char STATUS_FILTER[] = "car,alw,amp,frc,nrg,eto,wh";
 constexpr uint32_t POLL_INTERVAL_MS = 10000;
+#ifdef DESK_TEST
+constexpr uint32_t HEARTBEAT_MS = 15000;
+#else
 constexpr uint32_t HEARTBEAT_MS = 60000;
-constexpr uint32_t WIFI_RETRY_MS = 30000;
+#endif
 constexpr uint16_t HTTP_TIMEOUT_MS = 2000;
 constexpr int32_t POWER_DELTA_W = 300;
 
@@ -29,28 +33,69 @@ uint32_t lastPollMs = 0;
 uint32_t lastPollOkMs = 0;
 uint32_t lastSendMs = 0;
 uint32_t lastRxMs = 0;
-uint32_t wifiAttemptMs = 0;
+IPAddress chargerIp;
 float lastRxRssi = 0;
 float lastRxSnr = 0;
 int16_t radioState = RADIOLIB_ERR_NONE;
+int pollError = 0;
 
-void maintainWifi() {
-  if (WiFi.status() == WL_CONNECTED || millis() - wifiAttemptMs < WIFI_RETRY_MS) return;
-  wifiAttemptMs = millis();
-  WiFi.disconnect();
-  WiFi.begin(GOE_WIFI_SSID, GOE_WIFI_PASS);
+#ifdef DESK_TEST
+// Fake charger: a car charging on three phases at the configured current
+bool pollCharger() {
+  lastPollMs = millis();
+  if (state.amp == 0) state.amp = 10;
+  bool charging = state.frc != 1;
+  state.flags = TLM_CHARGER_OK | (charging ? TLM_ALLOWED : 0);
+  state.car = charging ? 2 : 4;
+  for (uint8_t i = 0; i < 3; i++) {
+    state.voltageV[i] = 228 + random(5);
+    state.currentCa[i] = charging ? state.amp * 100 - random(30) : 0;
+  }
+  state.powerW = charging ? 3 * 230 * state.amp : 0;
+  state.energySessionWh += state.powerW * (POLL_INTERVAL_MS / 1000) / 3600;
+  state.energyTotalWh = 1234000 + state.energySessionWh;
+  lastPollOkMs = millis();
+  return true;
 }
 
-bool httpGet(const String& path, String& body) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+bool setChargerValue(const char* key, int value) {
+  if (strcmp(key, "amp") == 0) state.amp = value;
+  if (strcmp(key, "frc") == 0) state.frc = value;
+  return true;
+}
+#else
+bool httpGet(IPAddress ip, const String& path, String& body) {
   HTTPClient http;
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
-  if (!http.begin(String(GOE_BASE_URL) + path)) return false;
+  if (!http.begin("http://" + ip.toString() + path)) return false;
   int code = http.GET();
   if (code == HTTP_CODE_OK) body = http.getString();
   http.end();
+  pollError = code == HTTP_CODE_OK ? 0 : code;
   return code == HTTP_CODE_OK;
+}
+
+// The charger joins our access point as a client. Other clients (e.g. a phone) may be connected too,
+// so every leased address is probed until one answers the status request.
+bool fetchStatus(const String& path, String& body) {
+  if (chargerIp && httpGet(chargerIp, path, body)) return true;
+  chargerIp = IPAddress();
+  pollError = 0;
+
+  wifi_sta_list_t wifiList;
+  esp_netif_sta_list_t netifList;
+  if (esp_wifi_ap_get_sta_list(&wifiList) != ESP_OK || esp_netif_get_sta_list(&wifiList, &netifList) != ESP_OK) {
+    return false;
+  }
+  for (int i = 0; i < netifList.num; i++) {
+    IPAddress ip(netifList.sta[i].ip.addr);
+    if (ip && httpGet(ip, path, body)) {
+      chargerIp = ip;
+      return true;
+    }
+  }
+  return false;
 }
 
 uint16_t clampU16(double v) { return static_cast<uint16_t>(constrain(lround(v), 0L, 65535L)); }
@@ -59,7 +104,13 @@ bool pollCharger() {
   lastPollMs = millis();
   String body;
   JsonDocument doc;
-  if (!httpGet(String("/api/status?filter=") + STATUS_FILTER, body) || deserializeJson(doc, body)) {
+  bool ok = fetchStatus(String("/api/status?filter=") + STATUS_FILTER, body);
+  if (ok && deserializeJson(doc, body)) {
+    ok = false;
+    pollError = 1;
+  }
+  if (!ok) {
+    Serial.printf("go-e poll failed: %d\n", pollError);
     state.flags &= ~TLM_CHARGER_OK;
     return false;
   }
@@ -84,8 +135,9 @@ bool pollCharger() {
 
 bool setChargerValue(const char* key, int value) {
   String body;
-  return httpGet(String("/api/set?") + key + "=" + value, body);
+  return chargerIp && httpGet(chargerIp, String("/api/set?") + key + "=" + value, body);
 }
+#endif
 
 bool telemetryChanged() {
   if (!everSent) return true;
@@ -132,7 +184,6 @@ void handleRadio() {
   lastRxMs = millis();
   lastRxRssi = pkt.rssi;
   lastRxSnr = pkt.snr;
-  screen.wake(SCREEN_PACKET_WAKE_MS);
 
   if (hdr.counter < lastCmdCounter) return;
   if (hdr.counter > lastCmdCounter) {
@@ -144,13 +195,19 @@ void handleRadio() {
 }
 
 void drawScreen() {
-  bool wifiOk = WiFi.status() == WL_CONNECTED;
   bool chargerOk = state.flags & TLM_CHARGER_OK;
   String lines[StatusDisplay::LINES] = {
       "GARAGE  " + formatUptime(),
-      "WiFi " + (wifiOk ? String(WiFi.RSSI()) + " dBm" : String("down")),
+#ifdef DESK_TEST
+      String("DESK TEST ") + lora.femName(),
+#else
+      "AP " + String(WiFi.softAPgetStationNum()) + " client " + (chargerIp ? chargerIp.toString() : String("-")),
+#endif
       radioState == RADIOLIB_ERR_NONE
-          ? "go-e " + (chargerOk ? String(carStateName(state.car)) : String("unreachable"))
+          ? "go-e " + (chargerOk                ? String(carStateName(state.car))
+                       : pollError == 1         ? String("bad JSON")
+                       : pollError              ? "HTTP " + String(pollError)
+                                                : String("not connected"))
           : "LoRa init err " + String(radioState),
       String(state.powerW / 1000.0f, 2) + " kW  " + state.amp + " A  " + frcName(state.frc),
       "TX #" + String(txCounter.value()) + "  " + formatAgo(lora.lastTxMs()) +
@@ -175,15 +232,14 @@ void setup() {
   radioState = lora.begin();
   if (radioState != RADIOLIB_ERR_NONE) Serial.printf("LoRa init failed: %d\n", radioState);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(GOE_WIFI_SSID, GOE_WIFI_PASS);
-  wifiAttemptMs = millis();
+#ifndef DESK_TEST
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(GOE_AP_SSID, GOE_AP_PASS);
+#endif
   lastPollMs = millis() - POLL_INTERVAL_MS;
 }
 
 void loop() {
-  maintainWifi();
   handleRadio();
 
   if (millis() - lastPollMs >= POLL_INTERVAL_MS) pollCharger();

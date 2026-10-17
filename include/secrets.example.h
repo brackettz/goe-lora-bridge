@@ -7,8 +7,9 @@
                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 
-#define GOE_WIFI_SSID "go-eCharger_000000"
-#define GOE_WIFI_PASS "changeme"
+// Access point opened by the garage node; join the charger to it in the go-e app (password: 8+ chars)
+#define GOE_AP_SSID "goe-lora-bridge"
+#define GOE_AP_PASS "changeme"
 
 #define HOME_WIFI_SSID "MyWifi"
 #define HOME_WIFI_PASS "changeme"
